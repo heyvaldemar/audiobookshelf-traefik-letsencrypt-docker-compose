@@ -37,6 +37,21 @@ services:
   # It is cheap and it is idempotent: after the first start the owner already
   # matches and the recursive chown is skipped entirely, so a metadata
   # directory with a hundred thousand cover images is not walked on every boot.
+  #
+  # It also decides whether the stack is allowed to start at all. The second
+  # half of the command works out, from the library directory's own mode bits,
+  # whether the server's uid could write there — and refuses to continue if it
+  # could not, naming both fixes. That question is answered arithmetically
+  # rather than by writing a file, because this container is root: a touch
+  # would succeed against a directory the server cannot write and would prove
+  # nothing. Without it, podcast downloads and file renames fail silently
+  # weeks later, with nothing in any log pointing back to a permission.
+  #
+  # The digits are split with parameter expansion rather than `expr substr`.
+  # `expr` exits 1 whenever its result is zero, and under `set -e` that ends
+  # the script — on a mode like 500, before it can print the message that is
+  # the entire point of the check. It still refused to start, which is the
+  # safe direction, but it refused in silence.
   init-permissions:
     image: *backups-image
     security_opt:
@@ -64,7 +79,31 @@ services:
           echo "giving $$d to $$PUID:$$PGID";
           chown -R "$$PUID:$$PGID" "$$d";
         fi;
-      done'
+      done;
+      LO="$$(stat -c %u /audiobooks)"; LG="$$(stat -c %g /audiobooks)"; LM="$$(stat -c %a /audiobooks)";
+      LM="$$(printf %03d "$$LM")";
+      D1="$${LM%??}"; D2="$${LM#?}"; D2="$${D2%?}"; D3="$${LM#??}";
+      if { [ "$$LO" = "$$PUID" ] && [ $$(( D1 & 2 )) -ne 0 ]; } ||
+         { [ "$$LG" = "$$PGID" ] && [ $$(( D2 & 2 )) -ne 0 ]; } ||
+         [ $$(( D3 & 2 )) -ne 0 ]; then
+        echo "the library at $$LO:$$LG mode $$LM accepts writes from $$PUID:$$PGID";
+      else
+        echo "" >&2;
+        echo "ERROR: the library directory is not writable by $$PUID:$$PGID." >&2;
+        echo "" >&2;
+        echo "  It is owned by $$LO:$$LG with mode $$LM." >&2;
+        echo "" >&2;
+        echo "  Audiobookshelf WRITES to your library: podcast episodes are" >&2;
+        echo "  downloaded into it and the file manager renames files there." >&2;
+        echo "  Without write access both stop working, and neither says why." >&2;
+        echo "" >&2;
+        echo "  Fix it one of two ways, on the host:" >&2;
+        echo "    chown -R $$PUID:$$PGID <your library path>" >&2;
+        echo "  or set AUDIOBOOKSHELF_UID and AUDIOBOOKSHELF_GID in .env to the" >&2;
+        echo "  owner it already has (id -u and id -g of that user)." >&2;
+        echo "" >&2;
+        exit 1;
+      fi'
     environment:
       PUID: ${AUDIOBOOKSHELF_UID:-1000}
       PGID: ${AUDIOBOOKSHELF_GID:-1000}
@@ -72,6 +111,12 @@ services:
       - audiobookshelf-config:/config
       - audiobookshelf-metadata:/metadata
       - audiobookshelf-backups:/backups
+      # Mounted only to answer one question: can the uid the server will run as
+      # actually write here? Read-only, and never chowned - your library is
+      # yours, and a recursive chown of terabytes because a variable was wrong
+      # is not something a deploy should be able to do. The answer comes from
+      # the directory's own mode bits, which a read-only mount still reports.
+      - ${AUDIOBOOKSHELF_LIBRARY_PATH:-./audiobooks}:/audiobooks:ro
     networks:
       - audiobookshelf-network
     restart: "no"

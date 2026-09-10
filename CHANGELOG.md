@@ -62,6 +62,15 @@ to the fleet standard established in
 
 ### Notes
 
+- **The stack refuses to start if the library is not writable by the uid the
+  server will run as.** The init container works that out from the directory's
+  own mode bits and names both fixes. Without it, podcast downloads and file
+  renames fail silently weeks later, with nothing in any log pointing back to a
+  permission. The first CI run is what asked for this: the runner's checkout
+  belongs to uid 1001, the server runs as 1000, and the write test caught it.
+  The question is answered arithmetically rather than by writing a file,
+  because the init container is root — a `touch` would succeed against a
+  directory the server cannot write and would prove nothing.
 - **`ROUTER_BASE_PATH` must not be cleared, and the reason is not obvious.**
   Audiobookshelf serves itself under `/audiobookshelf` even on a hostname of its
   own. Setting the variable to an empty string does make the *server* answer at
@@ -84,6 +93,20 @@ to the fleet standard established in
   Audiobookshelf's export is a consistent snapshot. Both land in `/backups`, so
   one directory answers "where are the backups" and one retention sweep covers
   both. The README asks you to turn it on.
+- **`expr` exits 1 when its result is zero.** The first version of that
+  permission check split the mode digits with `expr substr`, under `set -e`. On
+  a mode like 500 the third digit is `0`, `expr` printed it and exited 1, and
+  the script ended before reaching the message that is the whole point of the
+  check. It still refused to start — the safe direction — but it refused in
+  silence. Parameter expansion now does the splitting, with no external command
+  and no exit status to trip over.
+- **A shell comment inside a folded YAML scalar swallows the code after it.**
+  `>-` joins lines that share the base indentation, so a `#` comment written at
+  that level ends up on the same line as the commands that followed it, and
+  everything after the `#` is comment. The first draft of the init container
+  lost its entire permission check that way, silently. There are no shell
+  comments inside these folded commands now; the explanations live above the
+  `command:` key, where YAML keeps them.
 - **There is no Buffering middleware, deliberately.** Traefik streams bodies
   unless one is attached; attaching it is what turns buffering on, and `0` on
   its limits means *no size ceiling*, not *off*. Measured against a response

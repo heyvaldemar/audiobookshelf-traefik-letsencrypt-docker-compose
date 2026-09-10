@@ -66,6 +66,25 @@ The image does not contain `/config` or `/metadata`, so Docker creates those mou
 
 It runs once, exits, and the server waits for it. It is idempotent: after the first start the owner already matches and the recursive `chown` is skipped entirely, so a metadata directory holding a hundred thousand cover images is not walked on every boot. It never touches your library.
 
+It does, however, refuse to let the stack start if your library is not writable by that uid — reading the answer off the directory's mode bits and naming both fixes:
+
+```
+ERROR: the library directory is not writable by 1000:1000.
+
+  It is owned by 0:0 with mode 500.
+
+  Audiobookshelf WRITES to your library: podcast episodes are
+  downloaded into it and the file manager renames files there.
+  Without write access both stop working, and neither says why.
+
+  Fix it one of two ways, on the host:
+    chown -R 1000:1000 <your library path>
+  or set AUDIOBOOKSHELF_UID and AUDIOBOOKSHELF_GID in .env to the
+  owner it already has (id -u and id -g of that user).
+```
+
+Failing at deploy time with that message is the entire value. The alternative is a stack that comes up perfectly and stops downloading podcasts, and nobody notices for three weeks.
+
 ## Updating
 
 `./update.sh` moves this checkout to the latest release tag — a combination this repository's CI has booted, upgraded from the previous release on the same volumes, and smoke-tested — and then runs `docker compose up -d`. It refuses to cross a major version unattended, refuses to run over local changes, and names any variable that became required since your version before anything has moved. `./update.sh --dry-run` says what would happen.

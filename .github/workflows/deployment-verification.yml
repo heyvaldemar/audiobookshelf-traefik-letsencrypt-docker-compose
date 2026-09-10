@@ -227,7 +227,17 @@ jobs:
           # The library mount defaults to ./audiobooks; CI has none, and an
           # empty directory is the honest stand-in - it proves the mount works
           # without pretending there is content to scan.
+          #
+          # It is chowned to the uid this template ships as its default. That
+          # is not CI papering over a problem, it is CI doing what the README
+          # asks every deployer to do: the runner's checkout belongs to uid
+          # 1001, the server runs as 1000, and Audiobookshelf WRITES to the
+          # library. Skipping this step is how the first run of this job found
+          # out that the init container had no opinion about it - it does now,
+          # and refuses to start rather than letting podcast downloads fail
+          # silently in three weeks.
           mkdir -p audiobooks
+          sudo chown 1000:1000 audiobooks
           echo "Generated ephemeral .env for CI run"
 
       - name: Upgrade drill — the previous release comes up first, on the volumes this run will upgrade
