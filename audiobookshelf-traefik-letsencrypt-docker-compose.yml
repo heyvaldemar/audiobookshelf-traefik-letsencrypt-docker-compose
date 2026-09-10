@@ -1,0 +1,374 @@
+# Image pins live HERE, as interpolation defaults, so `git pull` (or
+# re-downloading this file) delivers the exact version combination this
+# repository has tested — no .env editing required. Setting the matching
+# variable in .env overrides the default for anyone who wants to pin
+# differently; .env itself carries only secrets and deliberate overrides.
+# CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
+# the pins from these lines — this block is the single source of truth.
+x-images:
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:f86a2cab1b5c649070c49f883c743dd32d8485a56e3368c5f93b9e91f1e91259}}
+  audiobookshelf: &audiobookshelf-image ${AUDIOBOOKSHELF_IMAGE_TAG:-ghcr.io/advplyr/audiobookshelf:${AUDIOBOOKSHELF_IMAGE_VERSION:-2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e}}
+  backups: &backups-image ${AUDIOBOOKSHELF_BACKUPS_IMAGE_TAG:-alpine:${AUDIOBOOKSHELF_BACKUPS_IMAGE_VERSION:-3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce}}
+
+networks:
+  audiobookshelf-network:
+    external: true
+  traefik-network:
+    external: true
+
+volumes:
+  audiobookshelf-config:
+  audiobookshelf-metadata:
+  audiobookshelf-backups:
+  traefik-certificates:
+
+services:
+  # A one-shot that runs before Audiobookshelf and exits. Its whole job is to
+  # make the three volumes writable by the uid the server runs as.
+  #
+  # It exists because of an ordering problem with no declarative answer. The
+  # image does not contain /config or /metadata, so Docker creates those
+  # mountpoints itself, owned by root. The server is deliberately NOT run as
+  # root (see below), and an unprivileged process cannot write a root-owned
+  # directory — so without this the container starts, fails to open its
+  # database, and restarts forever. Compose has no way to set the owner of a
+  # named volume, which is why this is a container and not a line of YAML.
+  #
+  # It is cheap and it is idempotent: after the first start the owner already
+  # matches and the recursive chown is skipped entirely, so a metadata
+  # directory with a hundred thousand cover images is not walked on every boot.
+  init-permissions:
+    image: *backups-image
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          memory: ${AUDIOBOOKSHELF_INIT_MEMORY_LIMIT:-64m}
+          cpus: "${AUDIOBOOKSHELF_INIT_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${AUDIOBOOKSHELF_INIT_MEMORY_RESERVATION:-8m}
+          cpus: "${AUDIOBOOKSHELF_INIT_CPU_RESERVATION:-0.1}"
+    command: >-
+      sh -c 'set -e;
+      for d in /config /metadata /backups; do
+        if [ "$$(stat -c %u "$$d")" = "$$PUID" ] && [ "$$(stat -c %g "$$d")" = "$$PGID" ]; then
+          echo "$$d already belongs to $$PUID:$$PGID";
+        else
+          echo "giving $$d to $$PUID:$$PGID";
+          chown -R "$$PUID:$$PGID" "$$d";
+        fi;
+      done'
+    environment:
+      PUID: ${AUDIOBOOKSHELF_UID:-1000}
+      PGID: ${AUDIOBOOKSHELF_GID:-1000}
+    volumes:
+      - audiobookshelf-config:/config
+      - audiobookshelf-metadata:/metadata
+      - audiobookshelf-backups:/backups
+    networks:
+      - audiobookshelf-network
+    restart: "no"
+
+  audiobookshelf:
+    image: *audiobookshelf-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Node serving HTTP and reading and writing files. No Linux capability is
+    # needed for that once the port is unprivileged, which it is.
+    cap_drop:
+      - ALL
+    # NOT root. This one matters more here than in the other media templates,
+    # because this server WRITES to your library: downloaded podcast episodes
+    # and files the built-in manager renames land there owned by whoever the
+    # process is. Left as root, your library slowly fills with root-owned files
+    # on a directory you thought was yours.
+    user: "${AUDIOBOOKSHELF_UID:-1000}:${AUDIOBOOKSHELF_GID:-1000}"
+    # The config directory holds absdatabase.sqlite. Docker's default is ten
+    # seconds to SIGKILL, and a kill during a checkpoint leaves a write-ahead
+    # log to replay at best and a torn page at worst.
+    stop_grace_period: ${AUDIOBOOKSHELF_STOP_GRACE_PERIOD:-60s}
+    # Resource limits as .env-overridable defaults; the override survives every
+    # git pull. What moves these is scanning a large library and generating
+    # waveforms, not playback.
+    deploy:
+      resources:
+        limits:
+          memory: ${AUDIOBOOKSHELF_MEMORY_LIMIT:-2g}
+          cpus: "${AUDIOBOOKSHELF_CPU_LIMIT:-2.0}"
+        reservations:
+          memory: ${AUDIOBOOKSHELF_MEMORY_RESERVATION:-256m}
+          cpus: "${AUDIOBOOKSHELF_CPU_RESERVATION:-0.2}"
+    volumes:
+      # Users, libraries, listening progress: absdatabase.sqlite lives here.
+      # This is the one worth backing up.
+      - audiobookshelf-config:/config
+      # Covers, waveforms, cached metadata. Rebuilt from the books themselves,
+      # so it is deliberately not archived.
+      - audiobookshelf-metadata:/metadata
+      # The same directory the backups sidecar writes into, and that is on
+      # purpose. Audiobookshelf has its own scheduled backup, which exports the
+      # database consistently rather than tarring it while it is being written.
+      # Pointing that schedule at /backups puts its exports beside the sidecar's
+      # archives, so one directory is the whole answer to "where are the
+      # backups" and one retention sweep covers both.
+      - audiobookshelf-backups:/backups
+      # YOUR LIBRARY, and unlike the video and music templates in this fleet it
+      # is mounted READ-WRITE. That is not an oversight. Audiobookshelf
+      # downloads podcast episodes into the library, and its file manager
+      # renames files to match the metadata it fetched. Mounted :ro, both stop
+      # working with no error a user would connect to the cause.
+      - ${AUDIOBOOKSHELF_LIBRARY_PATH:-./audiobooks}:/audiobooks
+    environment:
+      TZ: ${AUDIOBOOKSHELF_TZ:-Etc/UTC}
+      # The image declares PORT=80 and expects to run as root. This container
+      # does not, and an unprivileged process cannot bind 80 — so the server is
+      # moved to a high port. Nothing is published to the host either way;
+      # Traefik reaches it on the container network.
+      PORT: ${AUDIOBOOKSHELF_PORT:-13378}
+      # ROUTER_BASE_PATH IS DELIBERATELY NOT SET TO EMPTY. Its default is
+      # /audiobookshelf, so the application lives under that path even on a
+      # hostname of its own. Clearing the variable does make the SERVER answer
+      # at /, which is exactly the trap: the path is compiled into the browser
+      # bundle at image build time (it is a literal string in
+      # /app/client/dist/_nuxt/*.js), so the client still requests
+      # /audiobookshelf/login, which no longer exists. The result is a white
+      # page and "Server could not be reached" from a server that is perfectly
+      # healthy. Traefik redirects the root instead — see the labels below.
+    networks:
+      - audiobookshelf-network
+      - traefik-network
+    healthcheck:
+      # wget, not curl: this image has no curl at all, so the line the rest of
+      # this fleet uses would fail silently and the container would be
+      # permanently unhealthy — which, because Traefik does not route to an
+      # unhealthy container, presents as a 404 with nothing in any log.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${AUDIOBOOKSHELF_PORT:-13378}/healthcheck || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # Match incoming requests on a specific hostname
+      - "traefik.http.routers.audiobookshelf.rule=Host(`${AUDIOBOOKSHELF_HOSTNAME:?set in .env - see .env.example}`)"
+      # Assign the router to a named Traefik service
+      - "traefik.http.routers.audiobookshelf.service=audiobookshelf"
+      # Use the 'websecure' (HTTPS) entry point
+      - "traefik.http.routers.audiobookshelf.entrypoints=websecure"
+      # Define the internal container port for routing
+      - "traefik.http.services.audiobookshelf.loadbalancer.server.port=${AUDIOBOOKSHELF_PORT:-13378}"
+      # Enable TLS on this router
+      - "traefik.http.routers.audiobookshelf.tls=true"
+      # Use Let's Encrypt for certificate management
+      - "traefik.http.routers.audiobookshelf.tls.certresolver=letsencrypt"
+      # Pass the original Host header to the container
+      - "traefik.http.services.audiobookshelf.loadbalancer.passhostheader=true"
+      # THE ROOT REDIRECT. The application lives at /audiobookshelf and cannot
+      # be moved (see ROUTER_BASE_PATH above), so someone who types the bare
+      # hostname would get a 404 from a healthy server. A second router matches
+      # ONLY the root path and sends them one level in. Its rule is longer than
+      # the catch-all above, which already gives it the higher priority, and the
+      # priority is set explicitly rather than relying on that.
+      - "traefik.http.routers.audiobookshelf-root.rule=Host(`${AUDIOBOOKSHELF_HOSTNAME:?set in .env - see .env.example}`) && Path(`/`)"
+      - "traefik.http.routers.audiobookshelf-root.entrypoints=websecure"
+      - "traefik.http.routers.audiobookshelf-root.tls=true"
+      - "traefik.http.routers.audiobookshelf-root.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.audiobookshelf-root.service=audiobookshelf"
+      - "traefik.http.routers.audiobookshelf-root.priority=100"
+      - "traefik.http.routers.audiobookshelf-root.middlewares=audiobookshelf-toapp"
+      - "traefik.http.middlewares.audiobookshelf-toapp.redirectregex.regex=^https?://([^/]+)/?$$"
+      - "traefik.http.middlewares.audiobookshelf-toapp.redirectregex.replacement=https://$${1}/audiobookshelf/"
+      - "traefik.http.middlewares.audiobookshelf-toapp.redirectregex.permanent=false"
+      # Compression, but only for the things that compress. An m4b or an mp3 is
+      # already compressed: gzipping it spends CPU on both ends to make the file
+      # marginally larger. includedContentTypes turns the middleware into an
+      # allow-list, so the interface gets it and the audio never does.
+      - "traefik.http.middlewares.audiobookshelf-compress.compress=true"
+      - "traefik.http.middlewares.audiobookshelf-compress.compress.includedContentTypes=text/html,text/css,text/javascript,application/javascript,application/json,application/xml,image/svg+xml"
+      - "traefik.http.routers.audiobookshelf.middlewares=audiobookshelf-compress"
+      # THERE IS DELIBERATELY NO BUFFERING MIDDLEWARE HERE. Traefik streams
+      # request and response bodies unless you attach one; attaching it is what
+      # turns buffering ON, and setting its limits to 0 means "no size ceiling",
+      # not "off". Measured against a response that takes four seconds to
+      # produce: 0.03s to the first byte without it, 4.15s with it. What limits
+      # a long request is the entry point's readTimeout, 60s by default and set
+      # to zero below - which matters here because uploading an audiobook is
+      # one long request.
+      # Specify which Docker network Traefik should use for routing
+      - "traefik.docker.network=traefik-network"
+    restart: unless-stopped
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      traefik:
+        condition: service_healthy
+
+  traefik:
+    image: *traefik-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what this image's
+    # entrypoint needs (bind :80/:443).
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    # Resource limits as .env-overridable defaults (e.g. TRAEFIK_MEMORY_LIMIT=2g);
+    # the override survives every git pull.
+    deploy:
+      resources:
+        limits:
+          memory: ${TRAEFIK_MEMORY_LIMIT:-256m}
+          cpus: "${TRAEFIK_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${TRAEFIK_MEMORY_RESERVATION:-64m}
+          cpus: "${TRAEFIK_CPU_RESERVATION:-0.1}"
+    command:
+      # Set the log level (DEBUG, INFO, WARN, ERROR)
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-WARN}"
+      # Enable the built-in API and web-based dashboard
+      - "--api.dashboard=true"
+      # Enable the /ping endpoint so we can health-check Traefik
+      - "--ping=true"
+      # Assign the /ping endpoint to a dedicated entry point on port 8082
+      - "--ping.entrypoint=ping"
+      - "--entrypoints.ping.address=:8082"
+      # Define the primary HTTP entry point on port 80
+      - "--entrypoints.web.address=:80"
+      # Define the secure (HTTPS) entry point on port 443
+      - "--entrypoints.websecure.address=:443"
+      # HTTP -> HTTPS redirect at entrypoint level
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Uploading an audiobook is one long request and playing one is one long
+      # response. The 60-second default for reading a request body is the
+      # ceiling people meet first.
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=${AUDIOBOOKSHELF_IDLE_TIMEOUT:-600s}"
+      # Enable the Docker provider to detect containers and their labels
+      - "--providers.docker=true"
+      # Point Traefik to the Docker socket
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      # Prevent automatic exposure of all containers; only expose containers
+      # with "traefik.enable=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Use ACME (Let's Encrypt) to generate/renew certificates via TLS challenge
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      # The email address used by Let's Encrypt for renewal notices
+      - "--certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL:?set in .env - see .env.example}"
+      # The file where ACME certificates are stored inside the container
+      - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme/acme.json"
+      # Enable Prometheus metrics
+      - "--metrics.prometheus=true"
+      # Configure Prometheus histogram buckets
+      - "--metrics.prometheus.buckets=0.1,0.3,1.2,5.0"
+      # Check for newer Traefik versions and optionally log that info
+      - "--global.checknewversion=true"
+      # Disable sending anonymous usage data to the Traefik maintainers
+      - "--global.sendanonymoususage=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/etc/traefik/acme
+    networks:
+      - traefik-network
+    ports:
+      - "80:80"
+      - "443:443"
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:8082/ping","--spider"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      # Enable Traefik for this container
+      - "traefik.enable=true"
+      # A router to expose the Traefik dashboard
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_HOSTNAME:?set in .env - see .env.example}`)"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      # Basic Authentication for the Traefik dashboard
+      - "traefik.http.routers.dashboard.middlewares=authtraefik"
+      - "traefik.http.middlewares.authtraefik.basicauth.users=${TRAEFIK_BASIC_AUTH:?set in .env - see .env.example for htpasswd generation}"
+      # Specify the internal server port to the dashboard service
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
+      # Pass the original Host header to the backend
+      - "traefik.http.services.dashboard.loadbalancer.passhostheader=true"
+    restart: unless-stopped
+
+  backups:
+    # A plain alpine: the config directory is what is worth keeping, so the
+    # loop needs tar and nothing else.
+    image: *backups-image
+    # Hardening: no privilege escalation via setuid binaries
+    security_opt:
+      - no-new-privileges:true
+    # Drop every Linux capability; add back only what this container needs to
+    # write archives it owns and to read files owned by the server's uid.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    # Resource limits as .env-overridable defaults; the override survives every
+    # git pull.
+    deploy:
+      resources:
+        limits:
+          memory: ${AUDIOBOOKSHELF_BACKUPS_MEMORY_LIMIT:-256m}
+          cpus: "${AUDIOBOOKSHELF_BACKUPS_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: ${AUDIOBOOKSHELF_BACKUPS_MEMORY_RESERVATION:-16m}
+          cpus: "${AUDIOBOOKSHELF_BACKUPS_CPU_RESERVATION:-0.1}"
+    command: >-
+      sh -c 'sleep "$$BACKUP_INIT_SLEEP";
+      while true; do
+        STAMP="$$(date +%Y-%m-%d_%H-%M)";
+        DATA_FILE="$$DATA_BACKUPS_PATH/$$DATA_BACKUP_NAME-$$STAMP.tar.gz";
+        echo "[$$(date -Iseconds)] Starting config backup to $$DATA_FILE";
+        # Written to .partial and renamed only after the archive has been read
+        # back. The exit code alone cannot decide this: GNU tar reserves 1 for
+        # a file that changed mid-read and 2 for a real failure, but this is
+        # BusyBox tar, which returns 1 for both - including the is-a-directory
+        # case, where nothing was written at all. Reading it back is true on
+        # either tar and promises more than the code ever did.
+        tar -zcpf "$$DATA_FILE.partial" $$DATA_PATH; RC=$$?;
+        if { [ "$$RC" -eq 0 ] || [ "$$RC" -eq 1 ]; } && tar -tzf "$$DATA_FILE.partial" > /dev/null 2>&1; then
+          mv "$$DATA_FILE.partial" "$$DATA_FILE";
+          echo "[$$(date -Iseconds)] Data backup OK: $$DATA_FILE ($$(stat -c %s "$$DATA_FILE") bytes)$$([ "$$RC" -eq 1 ] && echo " - some files changed while being read")";
+        else
+          echo "[$$(date -Iseconds)] Data backup FAILED - partial file kept as $$DATA_FILE.failed for diagnosis" >&2;
+          mv "$$DATA_FILE.partial" "$$DATA_FILE.failed" 2>/dev/null || true;
+        fi;
+        if [ "$${DATA_BACKUP_PRUNE_DAYS:-0}" -ge 1 ]; then
+          find "$$DATA_BACKUPS_PATH" -type f -name "$$DATA_BACKUP_NAME-*" -mtime "+$$DATA_BACKUP_PRUNE_DAYS" -delete;
+        fi;
+        sleep "$$BACKUP_INTERVAL";
+      done'
+    volumes:
+      - audiobookshelf-config:${DATA_PATH:-/config}
+      - audiobookshelf-backups:${DATA_BACKUPS_PATH:-/srv/audiobookshelf-config/backups}
+    environment:
+      BACKUP_INIT_SLEEP: ${BACKUP_INIT_SLEEP:-30m}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-24h}
+      DATA_BACKUP_PRUNE_DAYS: ${DATA_BACKUP_PRUNE_DAYS:-7}
+      DATA_BACKUPS_PATH: ${DATA_BACKUPS_PATH:-/srv/audiobookshelf-config/backups}
+      DATA_PATH: ${DATA_PATH:-/config}
+      DATA_BACKUP_NAME: ${DATA_BACKUP_NAME:-audiobookshelf-config-backup}
+    networks:
+      - audiobookshelf-network
+    restart: unless-stopped
