@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(no unreleased changes yet)_
+### Changed
+
+- **`ghcr.io/advplyr/audiobookshelf:2.36.0` moved to `ghcr.io/advplyr/audiobookshelf:2.36.1`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
 
 ## [1.0.0] - 2026-09-10
 
