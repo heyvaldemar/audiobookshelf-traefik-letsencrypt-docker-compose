@@ -1,65 +1,64 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# audiobookshelf-restore-config.sh [backup-file-name]
+#
+# Replaces Audiobookshelf's application data with one of the archives the backups
+# service wrote.
+#
+#   ./audiobookshelf-restore-config.sh               list and ask
+#   ./audiobookshelf-restore-config.sh <file-name>   restore that one
+#
+# EVERY PATH, NAME AND CREDENTIAL COMES FROM THE RUNNING BACKUPS CONTAINER.
+# The previous version read DATA_PATH and DATA_BACKUPS_PATH from the shell
+# that ran it rather than from .env or the stack, so a path set in .env was not
+# the one it listed or cleared; it cleared with rm -rf dir/*, which leaves every
+# dotfile of the newer state in place; and it could only be run by hand.
+# The backup loop reads its own environment, so this reads the same one, and
+# the two cannot disagree.
+#
+# CI runs this exact file: a file written before a backup and deleted after
+# it must be back once that backup is restored.
+#
+# Set COMPOSE_PROJECT_NAME if the stack was started with a -p other than audiobookshelf.
+set -Eeuo pipefail
 
-# Restore Audiobookshelf's config directory from one of the archives the
-# `backups` container has taken.
-#
-# That directory is absdatabase.sqlite and the settings beside it: users and
-# their passwords, the libraries you defined, listening progress and bookmarks
-# for everyone, API tokens, and the podcast subscriptions with their download
-# schedules.
-#
-#     chmod +x audiobookshelf-restore-config.sh
-#     ./audiobookshelf-restore-config.sh
-#
-# The library itself is NOT in the archive and is not touched by this script.
-# Neither is /metadata — covers, waveforms and cached metadata are rebuilt from
-# the books, which is why the archive stays small enough to keep many of them.
-set -euo pipefail
-cd "$(dirname "$0")"
-
-COMPOSE_FILE="${DOCKER_COMPOSE_FILE:-audiobookshelf-traefik-letsencrypt-docker-compose.yml}"
 PROJECT="${COMPOSE_PROJECT_NAME:-audiobookshelf}"
-BACKUP_PATH="${DATA_BACKUPS_PATH:-/srv/audiobookshelf-config/backups}"
-RESTORE_PATH="${DATA_PATH:-/config}"
+APP_SERVICE="audiobookshelf"
 
-dc() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
+cid() {  # the container of one compose service in this project
+  docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter "label=com.docker.compose.service=$1" | head -n 1
+}
+APP="$(cid "$APP_SERVICE")"; BKP="$(cid backups)"
+[ -n "$BKP" ] || { echo "error: no backups container in compose project '$PROJECT' (set COMPOSE_PROJECT_NAME)" >&2; exit 1; }
+[ -n "$APP" ] || { echo "error: no $APP_SERVICE container in compose project '$PROJECT'" >&2; exit 1; }
+[ "$(docker inspect -f '{{.State.Running}}' "$BKP")" = true ] || { echo "error: the backups container is not running" >&2; exit 1; }
 
-APP_CONTAINER="$(dc ps -aq audiobookshelf | head -n 1)"
-BACKUPS_CONTAINER="$(dc ps -aq backups | head -n 1)"
-[ -n "$APP_CONTAINER" ] || { echo "the audiobookshelf container was not found — is the stack up?" >&2; exit 1; }
-[ -n "$BACKUPS_CONTAINER" ] || { echo "the backups container was not found — is the stack up?" >&2; exit 1; }
+env_of() { docker exec "$BKP" printenv "$1"; }
+DIR="$(env_of DATA_BACKUPS_PATH)"; NAME="$(env_of DATA_BACKUP_NAME)"; DATA="$(env_of DATA_PATH)"
+case "$DATA" in ""|/) echo "error: DATA_PATH is '$DATA'; refusing to clear it" >&2; exit 1 ;; esac
 
-echo "--> All available config backups:"
-docker exec "$BACKUPS_CONTAINER" sh -c "ls -1 $BACKUP_PATH" || true
-echo "--> Anything named 'absdatabase' above is Audiobookshelf's own scheduled"
-echo "--> export, which is a consistent snapshot rather than a tar taken while"
-echo "--> the database was live. Restore that one through Settings -> Backups."
-echo "--> This script restores the tar archives."
+SELECTED="${1:-}"
+if [ -z "$SELECTED" ]; then
+  echo "Application data backups in $DIR:"
+  docker exec "$BKP" sh -c "ls -1 '$DIR' | grep -E '^$NAME-.*\\.tar\\.gz\$'" || { echo "  none found" >&2; exit 1; }
+  read -r -p "File name to restore: " SELECTED
+fi
+case "$SELECTED" in ""|*/*) echo "error: give a file name from the list, not a path" >&2; exit 1 ;; esac
+docker exec "$BKP" tar -tzf "$DIR/$SELECTED" >/dev/null \
+  || { echo "error: $DIR/$SELECTED is missing or does not open; nothing was changed" >&2; exit 1; }
 
-echo "--> Copy and paste the backup name from the list above and press [ENTER]
---> Example: audiobookshelf-config-backup-YYYY-MM-DD_hh-mm.tar.gz"
-echo -n "--> "
-read -r SELECTED
-[ -n "$SELECTED" ] || { echo "nothing selected, nothing restored" >&2; exit 1; }
-
-if ! docker exec "$BACKUPS_CONTAINER" sh -c "tar -tzf '${BACKUP_PATH}/${SELECTED}' > /dev/null"; then
-  echo "that file is not a readable tar archive — nothing has been stopped or deleted" >&2
+echo "Stopping $APP_SERVICE so nothing writes while its data is replaced"
+docker stop "$APP" >/dev/null
+restart() { docker start "$APP" >/dev/null && echo "Started $APP_SERVICE"; }
+trap 'restart' EXIT
+echo "Restoring $SELECTED"
+# The archive holds the data directory relative to / (the loop writes it that
+# way), so it is extracted at /; what was there first is removed so files that
+# did not exist at backup time do not survive the restore.
+if ! docker exec "$BKP" sh -c "set -eu
+    find '$DATA' -mindepth 1 -delete
+    tar -xzpf '$DIR/$SELECTED' -C /"; then
+  echo "error: the restore failed part-way; $DATA may be incomplete. Restore another archive before using Audiobookshelf." >&2
   exit 1
 fi
-echo "--> $SELECTED was selected and reads as a valid archive"
-
-echo "--> Stopping Audiobookshelf..."
-docker stop "$APP_CONTAINER" > /dev/null
-
-echo "--> Restoring the config directory..."
-# The archive stores paths relative to /, so it extracts there. The directory
-# is emptied first: a restore that merges leaves rows in the old database that
-# the archive never had.
-docker exec "$BACKUPS_CONTAINER" sh -c "rm -rf '${RESTORE_PATH:?}'/* && tar -zxpf '${BACKUP_PATH}/${SELECTED}' -C /"
-echo "--> Config recovery completed."
-
-echo "--> Starting Audiobookshelf..."
-docker start "$APP_CONTAINER" > /dev/null
-echo "--> Audiobookshelf answers once it has opened the restored database."
-echo "--> Listening progress and users are back immediately. Covers and"
-echo "--> waveforms regenerate on demand; a full rescan is not required."
+echo "Restored $SELECTED into $DATA"

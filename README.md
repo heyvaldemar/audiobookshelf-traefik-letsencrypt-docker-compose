@@ -127,6 +127,8 @@ chmod +x ./*.sh
 ./audiobookshelf-restore-config.sh
 ```
 
+It lists the backups and asks, or takes a file name as its argument; it reads every path from the running backups container, and CI runs it on every push.
+
 It stops the server first: the database is written on every position update. Listening progress and users are back immediately afterwards; covers and waveforms regenerate on demand, so a full rescan is not needed.
 
 ## Resource limits
