@@ -51,6 +51,8 @@ jobs:
       DB_RESTORE: ""
       DATA_RESTORE: "./audiobookshelf-restore-config.sh \"$F\""
       DR_DIAG: ""
+      DR_IGNORE_SERVICES: ""
+      DR_KEEP: ""
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,6 +161,8 @@ jobs:
       DB_RESTORE: ""
       DATA_RESTORE: "./audiobookshelf-restore-config.sh \"$F\""
       DR_DIAG: ""
+      DR_IGNORE_SERVICES: ""
+      DR_KEEP: ""
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,6 +173,37 @@ jobs:
         run: |
           docker network create "$NETWORK_ONE" || true
           docker network create "$NETWORK_TWO" || true
+
+      - name: Generate test .env with ephemeral credentials
+        # The real .env is gitignored. CI generates throwaway credentials so
+        # `docker compose up` succeeds without committing secrets to the
+        # repo. No *_IMAGE_TAG values on purpose: the compose file's
+        # x-images defaults apply, so CI always tests exactly the pins the
+        # template ships to users who run it unmodified.
+        run: |
+          cat > .env <<EOF
+          TRAEFIK_ACME_EMAIL=ci@example.com
+          TRAEFIK_HOSTNAME=${APP_TRAEFIK_HOSTNAME}
+          TRAEFIK_BASIC_AUTH=traefikadmin:\$\$2y\$\$10\$\$sMzJfirKC75x/hVpiINeZOiSm.Jkity9cn4KwNkRvO7hSQVFc5FLO
+          AUDIOBOOKSHELF_HOSTNAME=${APP_HOSTNAME}
+          BACKUP_INIT_SLEEP=15s
+          BACKUP_INTERVAL=60s
+          EOF
+          # The library mount defaults to ./audiobooks; CI has none, and an
+          # empty directory is the honest stand-in - it proves the mount works
+          # without pretending there is content to scan.
+          #
+          # It is chowned to the uid this template ships as its default. That
+          # is not CI papering over a problem, it is CI doing what the README
+          # asks every deployer to do: the runner's checkout belongs to uid
+          # 1001, the server runs as 1000, and Audiobookshelf WRITES to the
+          # library. Skipping this step is how the first run of this job found
+          # out that the init container had no opinion about it - it does now,
+          # and refuses to start rather than letting podcast downloads fail
+          # silently in three weeks.
+          mkdir -p audiobooks
+          sudo chown 1000:1000 audiobooks
+          echo "Generated ephemeral .env for CI run"
 
       - name: Modify /etc/hosts for internal routing
         run: |
