@@ -1,6 +1,7 @@
 # Audiobookshelf + Traefik + Let's Encrypt on Docker Compose
 
 [![Deployment Verification](https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/actions/workflows/deployment-verification.yml/badge.svg?branch=main)](https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/actions/workflows/deployment-verification.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14915/badge)](https://www.bestpractices.dev/projects/14915)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This repository deploys Audiobookshelf (a self-hosted server for audiobooks, ebooks and podcasts, with apps on iOS and Android that keep your position in sync) behind Traefik with automatic Let's Encrypt TLS, with scheduled backups and a companion restore script.
