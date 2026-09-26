@@ -298,9 +298,9 @@ services:
       # Uploading an audiobook is one long request and playing one is one long
       # response. The 60-second default for reading a request body is the
       # ceiling people meet first.
-      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}"
-      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}"
-      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=${AUDIOBOOKSHELF_IDLE_TIMEOUT:-600s}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=${TRAEFIK_READ_TIMEOUT:-${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=${TRAEFIK_WRITE_TIMEOUT:-${AUDIOBOOKSHELF_STREAM_TIMEOUT:-0s}}"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=${TRAEFIK_IDLE_TIMEOUT:-${AUDIOBOOKSHELF_IDLE_TIMEOUT:-600s}}"
       # Enable the Docker provider to detect containers and their labels
       - "--providers.docker=true"
       # Point Traefik to the Docker socket
