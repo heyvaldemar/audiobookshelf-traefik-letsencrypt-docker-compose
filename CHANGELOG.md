@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.10] - 2026-10-23
+
 ### Security
 
 - **`traefik:3.7` was rebuilt upstream**; the pin moved from `sha256:22a759fb803a…` to `sha256:c8a121e4bb13…`. Same version, same tag, a rebuilt base image — the usual shape of a security fix in a base layer.
@@ -242,7 +246,8 @@ to the fleet standard established in
   seconds by default and set to zero here — which matters, because uploading an
   audiobook is one long request.
 
-[Unreleased]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.9...HEAD
+[Unreleased]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.10...HEAD
+[1.1.10]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.6...v1.1.7
