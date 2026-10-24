@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(no unreleased changes yet)_
+
+## [1.1.12] - 2026-10-24
+
 ### Changed
 
 - **`ghcr.io/advplyr/audiobookshelf:2.37.1` moved to `ghcr.io/advplyr/audiobookshelf:2.37.2`.** The freshness check reported the lag; the deploy job booted the stack on the new image before this landed.
@@ -254,7 +258,8 @@ to the fleet standard established in
   seconds by default and set to zero here — which matters, because uploading an
   audiobook is one long request.
 
-[Unreleased]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.11...HEAD
+[Unreleased]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.12...HEAD
+[1.1.12]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/heyvaldemar/audiobookshelf-traefik-letsencrypt-docker-compose/compare/v1.1.8...v1.1.9
