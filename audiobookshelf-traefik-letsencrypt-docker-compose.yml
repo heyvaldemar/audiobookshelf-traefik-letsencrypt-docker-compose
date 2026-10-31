@@ -6,7 +6,7 @@
 # CI (Trivy scans, check-pin-freshness, the ephemeral test .env) reads
 # the pins from these lines — this block is the single source of truth.
 x-images:
-  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:1336e85aaed293bd63d005086e0dd013b04078b26aaeb1c18b26a2f928af7e65}}
+  traefik: &traefik-image ${TRAEFIK_IMAGE_TAG:-traefik:${TRAEFIK_IMAGE_VERSION:-3.7@sha256:e9338a01a43389362bdef90afd4ff4a30dd6c0a2e1b0ce00c5e0f52659aa2d9c}}
   audiobookshelf: &audiobookshelf-image ${AUDIOBOOKSHELF_IMAGE_TAG:-ghcr.io/advplyr/audiobookshelf:${AUDIOBOOKSHELF_IMAGE_VERSION:-2.37.2@sha256:b897c33f05972fb1bf484f7487bc878fa91ec8691335c1db6e2929c3a7658efa}}
   backups: &backups-image ${AUDIOBOOKSHELF_BACKUPS_IMAGE_TAG:-alpine:${AUDIOBOOKSHELF_BACKUPS_IMAGE_VERSION:-3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f}}
 
